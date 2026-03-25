@@ -65,23 +65,6 @@ def read_letter_markdown(path):
     return title, subtitle, blocks
 
 
-def make_metrics(analysis):
-    bills = analysis.get('bills_summary', {})
-    orders = analysis.get('orders_summary', {})
-    fills = analysis.get('fills_summary', {})
-    by_inst = analysis.get('by_instrument_bills', [])
-    top_inst = by_inst[0].get('instId', '主力品种') if by_inst else '主力品种'
-
-    return [
-        ('合约净收益', fmt_money(bills.get('net_total', 0))),
-        ('手续费', fmt_money(bills.get('fee_total', 0))),
-        ('活跃交易日', str(fills.get('active_days', 0))),
-        (f'{top_inst} 净结果', fmt_money(by_inst[0].get('net', 0) if by_inst else 0)),
-        ('订单胜率', f'{float(orders.get("quality_order", {}).get("win_rate", 0)) * 100:.1f}%'),
-        ('最大回撤', fmt_money(orders.get('equity_order', {}).get('max_drawdown', 0))),
-    ]
-
-
 def block_to_html(block):
     if block.startswith('——'):
         return f'<p class="signature">{html.escape(block)}</p>'
@@ -91,73 +74,85 @@ def block_to_html(block):
     return f'<p>{"<br>".join(lines)}</p>'
 
 
+def first_sentence(text, fallback):
+    clean = ' '.join(text.split())
+    if not clean:
+        return fallback
+    parts = re.split(r'[。！？!?]', clean, maxsplit=1)
+    sentence = parts[0].strip()
+    if not sentence:
+        return fallback
+    return sentence[:32]
+
+
+def chunk_blocks(blocks, size=3):
+    return [blocks[index:index + size] for index in range(0, len(blocks), size)]
+
+
 def render_agent_letter_page(template_html, analysis, letter_md_path):
     title, subtitle, blocks = read_letter_markdown(letter_md_path)
-    cov = analysis.get('coverage', {})
-    insts = ', '.join(cov.get('instIds') or []) or '样本中无明确品种'
-    metrics = make_metrics(analysis)
+    content_blocks = [block for block in blocks if block.strip()]
+    signature = ''
+    if content_blocks and content_blocks[-1].startswith('——'):
+        signature = content_blocks.pop()
 
-    intro_block = blocks[0] if blocks else '这封信基于本次交易数据分析生成。'
-    body_blocks = blocks[1:] if len(blocks) > 1 else []
+    intro_block = content_blocks[0] if content_blocks else '这封信写给那个仍然愿意认真看见自己的人。'
+    body_blocks = content_blocks[1:] if len(content_blocks) > 1 else []
+    if not body_blocks:
+        body_blocks = [intro_block]
 
-    metric_html = '\n'.join(
-        f'''<div class="metric">
-                <div class="label">{html.escape(label)}</div>
-                <div class="value">{html.escape(value)}</div>
-              </div>'''
-        for label, value in metrics[:4]
-    )
+    section_titles = [
+        '先把感受说开',
+        '你和市场的相处方式',
+        '那些反复出现的东西',
+        '真正需要留下来的',
+    ]
 
-    content_html = '\n'.join(block_to_html(block) for block in body_blocks if block.strip())
-    if not content_html:
-        content_html = '<p>本次信件没有生成可展示的正文。</p>'
-
-    start = dt_cn_iso(cov.get('time_range_cn', {}).get('start'))
-    end = dt_cn_iso(cov.get('time_range_cn', {}).get('end'))
-    range_text = f'{start} ～ {end}（北京时间）' if start and end else '时间范围待确认'
+    section_html = []
+    for index, group in enumerate(chunk_blocks(body_blocks, size=3), start=1):
+        article_html = '\n'.join(block_to_html(block) for block in group)
+        lead_text = next((block for block in group if not block.startswith('——')), group[0])
+        aside_copy = first_sentence(lead_text, '这段话更像是慢慢把问题说透。')
+        heading = section_titles[(index - 1) % len(section_titles)]
+        section_html.append(
+            f'''
+    <section class="section">
+      <div class="section-grid">
+        <aside class="sticky-card">
+          <div class="index">{index:02d}</div>
+          <h2>{html.escape(heading)}</h2>
+          <p>{html.escape(aside_copy)}</p>
+        </aside>
+        <article class="content-card">
+          {article_html}
+        </article>
+      </div>
+    </section>'''
+        )
 
     new_main = f'''
   <main class="wrap">
     <section class="hero">
       <div class="hero-card">
-        <div class="eyebrow">Letter · Agent Written · Data Grounded</div>
+        <div class="eyebrow">Letter · Trading Reflection · v3</div>
         <h1>{html.escape(title)}</h1>
         <p class="subtitle">
-          {html.escape(subtitle or "这封信的正文由 agent 基于交易分析报告生成，页面仅复用模板视觉风格。")}
+          {html.escape(subtitle or "这不是一份冷冰冰的报告。更像是一封认真写下来的长信，把你这段时间和市场之间的关系，慢慢摊开给你看。")}
         </p>
 
-        <div class="hero-grid">
-          <div class="panel">
-            <h3>开场观察</h3>
-            <p class="keyline">{html.escape(intro_block)}</p>
-          </div>
-          <div class="panel">
-            <h3>文中关键数字</h3>
-            <div class="metrics">
-              {metric_html}
-            </div>
-          </div>
+        <div class="panel">
+          <h3>开场的话</h3>
+          <p class="keyline">{html.escape(first_sentence(intro_block, intro_block))}</p>
         </div>
       </div>
     </section>
 
-    <section class="section">
-      <div class="section-grid">
-        <aside class="sticky-card">
-          <div class="index">01</div>
-          <h2>来自数据的这封信</h2>
-          <p>数据时段：{html.escape(range_text)}。主要品种：{html.escape(insts)}。这个页面沿用模板的视觉风格，但正文内容来自 agent 对报告的阅读与归纳。</p>
-        </aside>
-        <article class="content-card">
-          {content_html}
-        </article>
-      </div>
-    </section>
+    {''.join(section_html)}
 
     <footer>
       <div class="ending">
-        <p>{html.escape(intro_block)}</p>
-        <div class="signature">{html.escape(title)}</div>
+        <p>{html.escape(first_sentence(body_blocks[-1], intro_block))}</p>
+        <div class="signature">{html.escape(signature or f"—— {title}")}</div>
       </div>
     </footer>
   </main>'''
